@@ -1,0 +1,636 @@
+---
+title: "Analyse Exploratoire — Détection et Classification du Harcèlement en Ligne"
+author: "Chloe, Sarah, Hafsa, Nadir"
+date: "16-03-2026"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    fig_caption: true
+    fig_width: 7
+    fig_height: 5
+    number_sections: false
+geometry: margin=2.5cm
+fontsize: 11pt
+---
+
+```{r setup, echo=FALSE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(tidytext)
+library(tm)
+library(wordcloud)
+library(syuzhet)
+library(stringr)
+library(scales)
+library(RColorBrewer)
+
+knitr::opts_chunk$set(
+  fig.align  = "center",
+  fig.width  = 7,
+  fig.height = 5,
+  out.width  = "85%",
+  echo       = FALSE,
+  message    = FALSE,
+  warning    = FALSE
+)
+
+# Chargement de la base complète
+data <- read.csv("Harcelement.csv", encoding = "UTF-8")
+colnames(data) <- trimws(colnames(data))
+
+# Mots outils
+stop_words_custom <- c(stopwords("fr"), stopwords("en"),
+                       "c'est", "ca", "a", "si", "plus", "fait",
+                       "people", "just", "get", "like", "don't", "also")
+
+# Palette catégories
+palette_cat <- c(
+  "Homophobie"   = "#9B59B6",
+  "Islamophobie" = "#2ECC71",
+  "Racisme"      = "#E74C3C",
+  "Sexisme"      = "#F39C12",
+  "Validisme"    = "#3498DB",
+  "Xénophobie"   = "#E91E8C"
+)
+
+categories <- c("Homophobie", "Islamophobie", "Racisme",
+                "Sexisme", "Validisme", "Xénophobie")
+```
+
+\newpage
+
+# Introduction
+
+Ce rapport présente l'analyse exploratoire complète (*Exploratory Data Analysis* — EDA) de notre base de données unifiée sur le harcèlement en ligne, composée de **2 640 messages** au total. Notre objectif est double : d'abord **détecter automatiquement** si un message est haineux ou non, puis **identifier la catégorie de harcèlement** parmi six formes (Homophobie, Islamophobie, Racisme, Sexisme, Validisme, Xénophobie).
+
+Cette EDA poursuit trois objectifs stratégiques directement liés à la construction de notre modèle de machine learning :
+
+1. **Valider la qualité et l'équilibre des données** — un dataset déséquilibré biaise le modèle dès l'entraînement.
+2. **Identifier les features discriminantes** — vocabulaire, longueur, ponctuation, émotions : quels signaux le modèle pourra-t-il exploiter ?
+3. **Orienter le choix du modèle** — les caractéristiques des données (séparabilité des classes, richesse des features, complexité des frontières de décision) déterminent quelle famille d'algorithmes sera la plus adaptée.
+
+---
+
+\newpage
+
+# Partie 1 — Structure et équilibre des données
+
+## 1. Répartition globale : Haineux vs Non Haineux
+
+**Pourquoi ce graphique ?**
+L'équilibre des classes est la première chose à vérifier avant tout entraînement. Un déséquilibre prononcé (ex : 90% de messages neutres) induirait un **biais de classe majoritaire** : le modèle pourrait atteindre une accuracy élevée en prédisant toujours "Non Haineux" sans jamais rien apprendre. Ce phénomène est l'une des causes d'échec les plus silencieuses en machine learning.
+
+**Ce qu'il nous apporte pour notre projet :**
+Un dataset équilibré nous permet d'utiliser l'**accuracy** comme métrique principale sans correction. Sinon, il aurait fallu recourir à des techniques de rééquilibrage (SMOTE, undersampling, pondération des classes dans la fonction de perte) ou privilégier le **F1-score macro** comme métrique d'évaluation.
+
+```{r repartition_types}
+data %>%
+  count(Types) %>%
+  ggplot(aes(x = Types, y = n, fill = Types)) +
+  geom_col(color = "black", width = 0.5) +
+  geom_text(aes(label = n), vjust = -0.5, fontface = "bold", size = 5) +
+  scale_fill_manual(values = c("Haineux" = "#904B7B", "Non Haineux" = "#FFC0CB")) +
+  theme_minimal(base_size = 13) +
+  labs(title = "Répartition Haineux vs Non Haineux",
+       x = "Type de message", y = "Nombre de messages") +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold"))
+```
+
+**Lecture du graphique :**
+La base est parfaitement équilibrée : 1 320 messages haineux et 1 320 messages neutres (50/50). Cette symétrie est idéale pour l'entraînement : le modèle apprendra les deux classes avec la même intensité. Aucun rééquilibrage artificiel n'est nécessaire, ce qui simplifie le pipeline et garantit que nos métriques d'évaluation (accuracy, F1) seront interprétables directement.
+
+---
+
+\newpage
+
+## 2. Répartition des 6 catégories de harcèlement
+
+**Pourquoi ce graphique ?**
+Notre problème est en réalité **hiérarchique** : une première tâche binaire (haineux ou non), et une seconde tâche multi-classes (quelle catégorie parmi 6). Pour cette seconde tâche, l'équilibre entre catégories est tout aussi critique : si une catégorie est surreprésentée, le modèle y sera meilleur mais au détriment des autres, ce qui est inacceptable dans un contexte de modération équitable entre formes de discrimination.
+
+**Ce qu'il nous apporte pour notre projet :**
+Un équilibre parfait entre catégories nous autorise à comparer directement les performances du modèle sur chaque catégorie sans biais structurel. Cela validera aussi que le **F1-score par classe** sera une métrique fiable et comparable d'une catégorie à l'autre.
+
+```{r repartition_categories}
+data %>%
+  filter(!is.na(Categories)) %>%
+  count(Categories) %>%
+  ggplot(aes(x = reorder(Categories, n), y = n, fill = Categories)) +
+  geom_col(color = "black") +
+  geom_text(aes(label = n), hjust = -0.2, fontface = "bold") +
+  coord_flip() +
+  scale_fill_manual(values = palette_cat) +
+  theme_minimal(base_size = 13) +
+  labs(title = "Nombre de messages par catégorie de harcèlement",
+       x = "Catégorie", y = "Nombre de messages") +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold")) +
+  ylim(0, 260)
+```
+
+**Lecture du graphique :**
+Chaque catégorie contient exactement 220 messages — un équilibre parfait entre les 6 formes de harcèlement. Cette uniformité est une garantie fondamentale : le modèle ne pourra pas "tricher" en favorisant les catégories les plus fréquentes. Elle implique aussi que nous pouvons entraîner un **classifieur multi-classes unique** sur les 6 catégories sans stratégie de rééchantillonnage spécifique.
+
+---
+
+\newpage
+
+# Partie 2 — Analyse linguistique
+
+## 3. Top 15 des mots les plus fréquents dans les messages haineux
+
+**Pourquoi ce graphique ?**
+Les **fréquences de mots** sont le fondement de la plupart des approches NLP classiques de classification de texte. Des méthodes comme le **TF-IDF** (*Term Frequency — Inverse Document Frequency*) ou le **bag-of-words** transforment le texte en vecteurs numériques basés sur ces fréquences. Ce graphique identifie visuellement les termes les plus discriminants dans les messages haineux, c'est-à-dire ceux qui pèseront le plus dans la décision du modèle.
+
+**Ce qu'il nous apporte pour notre projet :**
+Ce graphique sert aussi de **contrôle qualité du preprocessing** : si des mots génériques ou des artefacts non nettoyés apparaissent parmi les plus fréquents, cela signale que la liste de stopwords doit être enrichie avant de vectoriser les textes pour l'entraînement. Un preprocessing propre est une condition nécessaire pour que les features TF-IDF soient réellement discriminantes.
+
+```{r top15_haineux}
+data %>%
+  filter(Types == "Haineux") %>%
+  unnest_tokens(word, Texte) %>%
+  filter(!word %in% stop_words_custom, nchar(word) > 2) %>%
+  count(word, sort = TRUE) %>%
+  head(15) %>%
+  ggplot(aes(x = reorder(word, n), y = n)) +
+  geom_col(fill = "#904B7B", color = "black") +
+  coord_flip() +
+  theme_minimal(base_size = 13) +
+  labs(title = "Top 15 des mots dans les messages haineux",
+       x = "Mots", y = "Occurrences") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+```
+
+**Lecture du graphique :**
+Les termes dominants désignent directement les groupes ciblés par les différentes formes de harcèlement : ils constituent un **vocabulaire discriminant** à forte valeur prédictive. En termes de modélisation, ces mots obtiendront des poids élevés dans une régression logistique ou des scores TF-IDF importants dans un SVM linéaire — ce sont eux qui "feront" la décision de classification. La présence de termes clairement liés aux groupes discriminés (et non de mots génériques) confirme que le preprocessing est de bonne qualité.
+
+---
+
+\newpage
+
+## 4. Top 10 des mots par catégorie de harcèlement
+
+**Pourquoi ce graphique ?**
+Ce graphique est l'un des plus stratégiques de l'analyse. Il répond à la question centrale pour notre modèle multi-classes : **chaque catégorie possède-t-elle un vocabulaire qui lui est propre et exclusif ?** Si oui, une approche TF-IDF sera suffisante pour le classifieur. Si les vocabulaires se recoupent massivement, il faudra des représentations plus riches sémantiquement — typiquement des **word embeddings** (Word2Vec, GloVe) ou des **modèles de langage pré-entraînés** (BERT, CamemBERT).
+
+**Ce qu'il nous apporte pour notre projet :**
+Cette visualisation détermine directement notre stratégie de feature engineering. Elle nous permet aussi d'anticiper quelles paires de catégories seront les plus difficiles à distinguer pour le modèle — information précieuse pour interpréter la matrice de confusion lors de l'évaluation.
+
+```{r top_mots_par_cat, fig.height=9, out.width="100%"}
+data %>%
+  filter(!is.na(Categories)) %>%
+  unnest_tokens(word, Texte) %>%
+  filter(!word %in% stop_words_custom, nchar(word) > 2) %>%
+  count(Categories, word, sort = TRUE) %>%
+  group_by(Categories) %>%
+  slice_max(n, n = 10) %>%
+  ungroup() %>%
+  ggplot(aes(x = reorder_within(word, n, Categories), y = n, fill = Categories)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~Categories, scales = "free_y", ncol = 2) +
+  coord_flip() +
+  scale_x_reordered() +
+  scale_fill_manual(values = palette_cat) +
+  theme_minimal(base_size = 11) +
+  labs(title = "Top 10 des mots par catégorie de harcèlement",
+       x = "Mots", y = "Occurrences") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        strip.text = element_text(face = "bold"))
+```
+
+**Lecture du graphique :**
+Chaque catégorie révèle un vocabulaire central distinctif : "gay", "queer", "faggot" pour l'Homophobie ; "muslims", "camel", "jihad" pour l'Islamophobie ; "black", "nigger" pour le Racisme ; "women", "female", "bitch" pour le Sexisme ; "disabled", "cripple" pour le Validisme ; "immigrants", "refugee" pour la Xénophobie. Cette **spécificité lexicale par catégorie** est une excellente nouvelle : elle indique que les features TF-IDF seront suffisamment discriminantes pour entraîner un classifieur multi-classes performant, sans nécessiter des architectures complexes de type transformers dès le départ.
+
+---
+
+\newpage
+
+## 5. Comparaison du vocabulaire : Haineux vs Non Haineux
+
+**Pourquoi ce graphique ?**
+Ce graphique positionne en miroir les deux classes de notre tâche binaire. Il répond à la question fondamentale de faisabilité : **les deux classes sont-elles linguistiquement séparables ?** C'est la justification la plus directe du choix d'une approche NLP. Si les vocabulaires se ressemblaient, l'approche textuelle échouerait et il faudrait intégrer des signaux extralinguistiques (métadonnées, contexte, comportement de l'auteur).
+
+**Ce qu'il nous apporte pour notre projet :**
+La divergence lexicale visible entre les deux classes détermine le **type de frontière de décision** que le modèle devra apprendre. Une séparation nette favorise les modèles linéaires (régression logistique, SVM linéaire, Naive Bayes) qui sont rapides, interprétables et performants dans les espaces de haute dimension comme TF-IDF. Une séparation floue orienterait vers des modèles non linéaires (Random Forest, réseaux de neurones).
+
+```{r top_mots_comparaison}
+data %>%
+  unnest_tokens(word, Texte) %>%
+  filter(!word %in% stop_words_custom, nchar(word) > 2) %>%
+  count(Types, word, sort = TRUE) %>%
+  group_by(Types) %>%
+  slice_max(n, n = 12) %>%
+  ungroup() %>%
+  ggplot(aes(x = reorder_within(word, n, Types), y = n, fill = Types)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~Types, scales = "free") +
+  coord_flip() +
+  scale_x_reordered() +
+  scale_fill_manual(values = c("Haineux" = "#904B7B", "Non Haineux" = "#FFC0CB")) +
+  theme_minimal(base_size = 12) +
+  labs(title = "Vocabulaire dominant : Haineux vs Non Haineux",
+       x = "Mots", y = "Occurrences") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        strip.text = element_text(face = "bold"))
+```
+
+**Lecture du graphique :**
+L'opposition est frappante et immédiate : les messages haineux concentrent des termes ciblant des groupes sociaux, tandis que les messages neutres utilisent un vocabulaire du quotidien (créativité, cuisine, musique, encouragement). Cette divergence confirme que les deux classes sont **linéairement séparables dans l'espace TF-IDF**, ce qui est une condition favorable pour des classifieurs simples et interprétables. Un SVM linéaire ou une régression logistique devraient obtenir de très bonnes performances sur cette tâche binaire.
+
+---
+
+\newpage
+
+# Partie 3 — Analyse stylistique
+
+## 6. Distribution de la longueur des messages
+
+**Pourquoi ce graphique ?**
+La longueur d'un message (nombre de mots) est une **feature numérique directement exploitable** par un modèle, en complément des features textuelles. Elle est particulièrement utile pour les messages courts dont le vocabulaire est si limité que les features TF-IDF seules ne suffisent pas à les classer. Ce graphique de densité révèle la forme complète de la distribution pour chaque classe — bien plus informative que la simple moyenne.
+
+**Ce qu'il nous apporte pour notre projet :**
+Si les distributions diffèrent entre haineux et neutres, la longueur devient une **feature supplémentaire à intégrer** dans notre vecteur de features, aux côtés du TF-IDF. Dans un Random Forest ou un Gradient Boosting, cette feature numérique simple peut contribuer significativement à l'accuracy, notamment sur les cas limites où le vocabulaire est ambigu.
+
+```{r longueur_messages}
+data$nb_mots <- str_count(data$Texte, "\\S+")
+
+ggplot(data, aes(x = nb_mots, fill = Types)) +
+  geom_density(alpha = 0.6) +
+  scale_fill_manual(values = c("Haineux" = "#904B7B", "Non Haineux" = "#FFC0CB")) +
+  theme_minimal(base_size = 13) +
+  labs(title = "Distribution de la longueur des messages",
+       subtitle = "Nombre de mots par message",
+       x = "Nombre de mots", y = "Densité", fill = "Type") +
+  theme(plot.title    = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5))
+```
+
+**Lecture du graphique :**
+Les deux distributions présentent une forme similaire centrée sur les messages courts (5–15 mots), typiques des échanges sur les réseaux sociaux. La légère différence de forme entre les deux courbes confirme que la longueur capte une information structurelle complémentaire au vocabulaire. En pratique, la variable `nb_mots` sera ajoutée comme feature numérique dans notre matrice d'entraînement, en complément de la matrice TF-IDF sparse.
+
+---
+
+\newpage
+
+## 7. Longueur moyenne par catégorie de harcèlement
+
+**Pourquoi ce graphique ?**
+Ce graphique explore si les 6 catégories présentent des **profils de longueur distincts**. Certaines formes de harcèlement s'expriment via des argumentaires développés (Islamophobie, Xénophobie), d'autres par des insultes directes courtes (Racisme, Homophobie). Les barres d'erreur (écart-type) mesurent la variabilité interne : une forte variance indique une catégorie hétérogène stylistiquement.
+
+**Ce qu'il nous apporte pour notre projet :**
+Des différences de longueur entre catégories enrichissent le vecteur de features pour la tâche multi-classes. Dans un modèle à **features mixtes** (TF-IDF + features numériques), la longueur peut aider à discriminer des catégories dont les vocabulaires se chevauchent partiellement. Une forte variance interne signale aussi que certaines catégories seront plus difficiles à classer de manière homogène.
+
+```{r longueur_par_cat}
+data %>%
+  filter(!is.na(Categories)) %>%
+  mutate(nb_mots = str_count(Texte, "\\S+")) %>%
+  group_by(Categories) %>%
+  summarise(moy = mean(nb_mots), sd = sd(nb_mots)) %>%
+  ggplot(aes(x = reorder(Categories, moy), y = moy, fill = Categories)) +
+  geom_col(color = "black") +
+  geom_errorbar(aes(ymin = moy - sd, ymax = moy + sd), width = 0.3) +
+  coord_flip() +
+  scale_fill_manual(values = palette_cat) +
+  theme_minimal(base_size = 13) +
+  labs(title = "Longueur moyenne des messages par catégorie",
+       subtitle = "Barres d'erreur = écart-type",
+       x = "Catégorie", y = "Nombre de mots moyen") +
+  theme(legend.position = "none",
+        plot.title    = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5))
+```
+
+**Lecture du graphique :**
+Les catégories présentent des longueurs moyennes proches mais des écart-types larges, ce qui reflète la diversité stylistique au sein de chaque forme de harcèlement. Cette variabilité interne est un signal important : elle indique que la longueur seule ne suffira pas à discriminer les catégories, mais qu'elle constituera une feature complémentaire utile dans un modèle combinant plusieurs types de features (TF-IDF + longueur + score émotionnel).
+
+---
+
+\newpage
+
+## 8. Niveau d'exclamation moyen par catégorie
+
+**Pourquoi ce graphique ?**
+Le point d'exclamation est un marqueur d'**agressivité expressive et d'intensité émotionnelle** dans l'écrit numérique. En NLP, on parle de features **prosodiques textuelles** : elles encodent non pas ce qui est dit mais *comment* c'est dit. Ce type de feature est particulièrement précieux pour détecter la haine implicite — des messages qui évitent les insultes explicites mais trahissent leur agressivité par leur style.
+
+**Ce qu'il nous apporte pour notre projet :**
+Si des catégories utilisent significativement plus de points d'exclamation, cette feature permettra au modèle de les identifier même quand le vocabulaire est ambigu. Elle est particulièrement utile dans un **modèle à features enrichies** où l'on combine TF-IDF, longueur, et indicateurs stylistiques pour améliorer la robustesse sur les cas difficiles.
+
+```{r exclamation_cat}
+data %>%
+  filter(!is.na(Categories)) %>%
+  mutate(excl = str_count(Texte, "!")) %>%
+  group_by(Categories) %>%
+  summarise(moy_excl = mean(excl)) %>%
+  ggplot(aes(x = reorder(Categories, moy_excl), y = moy_excl, fill = Categories)) +
+  geom_col(color = "black") +
+  coord_flip() +
+  scale_fill_manual(values = palette_cat) +
+  theme_minimal(base_size = 13) +
+  labs(title = "Niveau d'exclamation moyen par catégorie",
+       x = "Catégorie", y = "Moyenne de '!'") +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold"))
+```
+
+**Lecture du graphique :**
+Les catégories affichant un niveau d'exclamation plus élevé correspondent à des formes de harcèlement émotionnellement plus expressives — la haine y est "criée". À l'inverse, les catégories avec peu d'exclamations pratiquent une haine plus froide et rhétorique, potentiellement plus difficile à détecter par un modèle uniquement basé sur le vocabulaire. Ce contraste justifie d'intégrer des **features stylistiques** dans notre pipeline de classification.
+
+---
+
+\newpage
+
+## 9. Score d'agressivité stylistique composite
+
+**Pourquoi ce graphique ?**
+Ce graphique construit un **score composite** combinant trois indicateurs d'intensité stylistique : points d'exclamation (`!`), points d'interrogation rhétoriques (`?`) et séquences de majuscules (symbolisant le "cri" dans l'écrit numérique). Ce score synthétique va au-delà de chaque indicateur pris isolément et constitue une feature numérique riche, directement utilisable dans un modèle.
+
+**Ce qu'il nous apporte pour notre projet :**
+Ce score composite peut être intégré directement comme **feature d'entrée** dans tout classifieur (Random Forest, SVM, Gradient Boosting). Il est particulièrement utile pour les messages qui contournent les filtres lexicaux — haine implicite, sarcasme, métaphores — en révélant leur agressivité uniquement à travers leur style. C'est une feature de **robustesse** qui améliore les performances sur les cas difficiles.
+
+```{r score_agressivite}
+data %>%
+  filter(!is.na(Categories)) %>%
+  mutate(
+    excl    = str_count(Texte, "!"),
+    interro = str_count(Texte, "\\?"),
+    caps    = str_count(Texte, "[A-Z]{2,}"),
+    score   = excl + interro + caps
+  ) %>%
+  group_by(Categories) %>%
+  summarise(score_moy = mean(score)) %>%
+  ggplot(aes(x = reorder(Categories, score_moy), y = score_moy, fill = Categories)) +
+  geom_col(color = "black") +
+  coord_flip() +
+  scale_fill_manual(values = palette_cat) +
+  theme_minimal(base_size = 13) +
+  labs(title = "Score d'agressivité stylistique par catégorie",
+       subtitle = "Combinaison de '!', '?' et mots en MAJUSCULES",
+       x = "Catégorie", y = "Score moyen") +
+  theme(legend.position = "none",
+        plot.title    = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5))
+```
+
+**Lecture du graphique :**
+Le classement des catégories par score stylistique révèle deux profils distincts : les catégories à forte intensité expressive (haine émotionnelle, impulsive) et les catégories à faible score (haine froide, construite rhétoriquement). Cette distinction est cruciale pour le modèle : les catégories à faible score stylistique seront probablement celles où le modèle fera le plus d'erreurs si on ne lui fournit que des features lexicales. Les features stylistiques deviennent alors un levier clé pour améliorer les performances sur ces cas difficiles.
+
+---
+
+\newpage
+
+# Partie 4 — Analyse émotionnelle (Lexique NRC)
+
+## 10. Profil émotionnel global des messages haineux
+
+**Pourquoi ce graphique ?**
+Le lexique **NRC** (*National Research Council*) associe des milliers de mots à 8 émotions de base (colère, peur, joie, tristesse, surprise, dégoût, confiance, anticipation) ainsi qu'à une polarité positive/négative. L'analyse NRC transforme un texte non structuré en **vecteur numérique de 8 ou 10 dimensions** — une représentation compacte et sémantiquement riche, directement exploitable comme features d'entrée dans un classifieur.
+
+**Ce qu'il nous apporte pour notre projet :**
+Plutôt que de travailler avec des milliers de colonnes TF-IDF (problème de dimensionnalité), les scores NRC résument l'information affective en 8 valeurs. Dans un modèle à **features mixtes**, ces scores complètent le TF-IDF en apportant une couche sémantique émotionnelle que les simples fréquences de mots ne capturent pas. Ils sont particulièrement utiles pour les messages où le vocabulaire haineux est camouflé derrière un ton émotionnel négatif.
+
+```{r emotions_global}
+emotions_h <- get_nrc_sentiment(data$Texte[data$Types == "Haineux"])
+df_sent_global <- data.frame(
+  emotion = names(colSums(emotions_h)),
+  score   = colSums(emotions_h)
+)
+
+ggplot(df_sent_global[1:8, ],
+       aes(x = reorder(emotion, score), y = score, fill = emotion)) +
+  geom_col(color = "black") +
+  coord_flip() +
+  scale_fill_brewer(palette = "RdPu") +
+  theme_minimal(base_size = 13) +
+  labs(title = "Émotions dominantes dans les messages haineux (NRC)",
+       x = "Émotions", y = "Score total") +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold"))
+```
+
+**Lecture du graphique :**
+La Colère (*anger*) et le Dégoût (*disgust*) dominent massivement le profil émotionnel des messages haineux — ce qui est cohérent avec la littérature en psychologie sociale sur les mécanismes du discours de haine. La Peur et la Tristesse sont aussi présentes, reflétant des dynamiques de victimisation et de menace. Ces résultats confirment que les scores NRC sont des **features valides et discriminantes** : un score de colère élevé sera l'un des prédicteurs les plus forts de la classe "Haineux" dans notre modèle.
+
+---
+
+\newpage
+
+## 11. Profil émotionnel par catégorie de harcèlement
+
+**Pourquoi ce graphique ?**
+Ce graphique calcule un profil NRC distinct pour **chacune des 6 catégories**. Il répond à une question stratégique pour la classification multi-classes : les différentes formes de harcèlement mobilisent-elles des émotions différentes ? Si oui, les scores NRC deviennent des features discriminantes non seulement pour la tâche binaire, mais aussi pour distinguer les catégories entre elles — potentiellement sans avoir besoin de tout le vocabulaire.
+
+**Ce qu'il nous apporte pour notre projet :**
+Des profils émotionnels distincts par catégorie permettraient de construire un **classifieur compact** basé uniquement sur les 8 scores NRC, à tester en baseline avant les modèles plus complexes. C'est aussi un indicateur des catégories susceptibles d'être confondues par le modèle : deux catégories aux profils émotionnels proches auront tendance à générer des erreurs de classification croisées.
+
+```{r emotions_par_cat, fig.height=9, out.width="100%"}
+emotions_list <- lapply(categories, function(cat) {
+  textes <- data$Texte[data$Categories == cat & !is.na(data$Categories)]
+  em <- get_nrc_sentiment(textes)
+  data.frame(
+    emotion   = names(colSums(em[, 1:8])),
+    score     = as.numeric(colSums(em[, 1:8])),
+    Categorie = cat
+  )
+})
+
+df_emotions_cat <- bind_rows(emotions_list)
+
+ggplot(df_emotions_cat,
+       aes(x = reorder_within(emotion, score, Categorie),
+           y = score, fill = Categorie)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~Categorie, scales = "free", ncol = 2) +
+  coord_flip() +
+  scale_x_reordered() +
+  scale_fill_manual(values = palette_cat) +
+  theme_minimal(base_size = 11) +
+  labs(title = "Profil émotionnel NRC par catégorie",
+       x = "Émotions", y = "Score") +
+  theme(plot.title  = element_text(hjust = 0.5, face = "bold"),
+        strip.text  = element_text(face = "bold"))
+```
+
+**Lecture du graphique :**
+Chaque catégorie présente une **signature émotionnelle distincte** : la colère domine dans l'Islamophobie et le Sexisme, la tristesse ressort dans le Racisme, la peur caractérise la Xénophobie et le Validisme. Ces nuances confirment que les features NRC apportent une information différenciante réelle pour la classification multi-classes. En pratique, on peut construire une matrice où chaque message est représenté par ses 8 scores NRC et tester un premier classifieur sur cette représentation avant de passer à TF-IDF ou aux embeddings.
+
+---
+
+\newpage
+
+## 12. Score de sentiment positif vs négatif par catégorie
+
+**Pourquoi ce graphique ?**
+Certains messages haineux **instrumentalisent le vocabulaire positif** pour masquer leur contenu discriminatoire — technique rhétorique connue sous le nom de *dog whistle* ("J'aime mon pays, c'est pourquoi je refuse les immigrés"). Ce graphique mesure le ratio positif/négatif par catégorie pour identifier quelles formes de harcèlement recourent davantage à cette stratégie de camouflage.
+
+**Ce qu'il nous apporte pour notre projet :**
+Les catégories avec un ratio positif/négatif plus élevé correspondent à des discours haineux plus sophistiqués rhétoriquement, que les modèles basés uniquement sur les fréquences de mots auront plus de mal à détecter. Ces catégories sont les candidates idéales pour justifier l'utilisation de modèles plus puissants capables de saisir le contexte, comme **BERT** ou des **réseaux de neurones récurrents (LSTM)**, qui comprennent la structure de la phrase et non juste la présence de mots isolés.
+
+```{r pos_neg_cat}
+sent_list <- lapply(categories, function(cat) {
+  textes <- data$Texte[data$Categories == cat & !is.na(data$Categories)]
+  em <- get_nrc_sentiment(textes)
+  data.frame(
+    Categorie = cat,
+    Positif   = sum(em$positive),
+    Negatif   = sum(em$negative)
+  )
+})
+
+df_sent_cat <- bind_rows(sent_list) %>%
+  pivot_longer(cols = c(Positif, Negatif),
+               names_to = "Sentiment", values_to = "Score")
+
+ggplot(df_sent_cat, aes(x = Categorie, y = Score, fill = Sentiment)) +
+  geom_col(position = "dodge", color = "black") +
+  scale_fill_manual(values = c("Positif" = "#FFC0CB", "Negatif" = "#904B7B")) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1),
+        plot.title  = element_text(hjust = 0.5, face = "bold")) +
+  labs(title = "Score de sentiment positif vs négatif par catégorie",
+       x = "Catégorie", y = "Score NRC total")
+```
+
+**Lecture du graphique :**
+Toutes les catégories affichent une dominance négative, mais l'amplitude varie. Les catégories où l'écart positif/négatif est le moins prononcé pratiquent une haine plus enrobée — elles sont les plus délicates pour le modèle. Ce résultat oriente vers une stratégie d'entraînement différenciée : un premier modèle simple (régression logistique, Naive Bayes) comme baseline, puis des modèles plus sophistiqués pour traiter spécifiquement les catégories à haine camouflée.
+
+---
+
+\newpage
+
+# Partie 5 — Nuages de mots
+
+## 13. Nuage de mots comparatif : Haineux vs Non Haineux
+
+**Pourquoi ce graphique ?**
+Le nuage comparatif (*comparison cloud*) positionne dans un même espace visuel les mots les plus caractéristiques de chaque classe, avec une taille proportionnelle à leur fréquence relative. C'est la visualisation la plus intuitive pour communiquer la **séparabilité lexicale** des deux classes — une démonstration visuelle directe que la tâche de classification est bien fondée.
+
+**Ce qu'il nous apporte pour notre projet :**
+Ce graphique est aussi un **outil de validation du preprocessing** : des mots génériques ou des artefacts en grande taille signalent un nettoyage insuffisant. Il permet enfin d'identifier visuellement les **termes les plus discriminants** qui obtiendront les poids les plus élevés dans une régression logistique ou les scores TF-IDF les plus élevés dans un SVM.
+
+```{r wordcloud_compare, fig.height=6, fig.width=7}
+haine_text     <- paste(data$Texte[data$Types == "Haineux"],     collapse = " ")
+non_haine_text <- paste(data$Texte[data$Types == "Non Haineux"], collapse = " ")
+
+corpus_wc <- Corpus(VectorSource(c(haine_text, non_haine_text))) %>%
+  tm_map(content_transformer(tolower)) %>%
+  tm_map(removePunctuation) %>%
+  tm_map(removeWords, stop_words_custom)
+
+tdm <- TermDocumentMatrix(corpus_wc)
+colnames(tdm) <- c("Haineux", "Non-Haineux")
+matrix_comp <- as.matrix(tdm)
+
+comparison.cloud(matrix_comp,
+                 colors = c("#904B7B", "#3498DB"),
+                 max.words = 120,
+                 scale = c(2.5, 0.4),
+                 title.size = 1.5)
+```
+
+**Lecture du graphique :**
+La séparation visuelle est immédiate et frappante. Les grands mots violets (haineux) ciblent directement des groupes sociaux ou expriment de la violence verbale. Les grands mots bleus (neutres) reflètent des thèmes anodins du quotidien. Cette opposition visuelle est la preuve la plus intuitive que les données contiennent un **signal textuel fort et exploitable** : la frontière entre les deux classes existe réellement dans l'espace lexical, et un classifieur peut l'apprendre.
+
+---
+
+\newpage
+
+## 14. Nuages de mots par catégorie de harcèlement
+
+**Pourquoi ce graphique ?**
+Ces 6 nuages individuels révèlent l'**identité lexicale propre** à chaque forme de harcèlement, avec une hiérarchie visuelle des termes (taille proportionnelle à la fréquence). Ils permettent d'identifier les termes centraux — ceux que le modèle pondérera le plus pour reconnaître chaque catégorie — et les termes partagés entre catégories, qui seront sources de confusion.
+
+**Ce qu'il nous apporte pour notre projet :**
+En comparant les nuages, on repère les **paires de catégories susceptibles d'être confondues** par le modèle (ex : Racisme et Xénophobie partagent des termes comme "country", "lives"). Ces paires sont les candidates prioritaires à surveiller dans la matrice de confusion lors de l'évaluation. Elles indiquent aussi où un modèle plus puissant (capable de comprendre le contexte sémantique) apporterait le plus de valeur ajoutée par rapport à une approche bag-of-words.
+
+```{r wordclouds_cat, fig.height=10, fig.width=8}
+couleurs_wc <- list(
+  "Homophobie"   = c("#9B59B6", "#D2B4DE", "#7D3C98"),
+  "Islamophobie" = c("#2ECC71", "#A9DFBF", "#1D8348"),
+  "Racisme"      = c("#E74C3C", "#F1948A", "#922B21"),
+  "Sexisme"      = c("#F39C12", "#FAD7A0", "#B7770D"),
+  "Validisme"    = c("#3498DB", "#AED6F1", "#1A5276"),
+  "Xénophobie"   = c("#E91E8C", "#F9A8D4", "#9B0A5A")
+)
+
+par(mfrow = c(3, 2), mar = c(0.5, 0.5, 2, 0.5), oma = c(0, 0, 0, 0))
+
+for (cat in names(couleurs_wc)) {
+  texte_cat <- paste(data$Texte[data$Categories == cat &
+                                  !is.na(data$Categories)], collapse = " ")
+  corp <- Corpus(VectorSource(texte_cat)) %>%
+    tm_map(content_transformer(tolower)) %>%
+    tm_map(removePunctuation) %>%
+    tm_map(removeWords, stop_words_custom)
+  tdm_cat <- TermDocumentMatrix(corp)
+  mat_cat <- as.matrix(tdm_cat)
+  freq_cat <- sort(rowSums(mat_cat), decreasing = TRUE)
+  wordcloud(names(freq_cat), freq_cat,
+            max.words    = 60,
+            colors       = couleurs_wc[[cat]],
+            scale        = c(2.2, 0.35),
+            random.order = FALSE)
+  title(main = cat, cex.main = 1.4, font.main = 2, line = 0.3)
+}
+par(mfrow = c(1, 1))
+```
+
+**Lecture du graphique :**
+Chaque nuage révèle un terme dominant central (le plus grand) qui constitue le marqueur lexical principal de sa catégorie : "gay" pour l'Homophobie, "muslims" pour l'Islamophobie, "black" pour le Racisme, "women" pour le Sexisme, "disabled" pour le Validisme, "immigrants" pour la Xénophobie. Ces termes sont les ancres sémantiques de chaque classe. En revanche, des termes comme "typical", "nothing", "lives", "country", "will" apparaissent dans plusieurs nuages — ce sont les **zones d'ambiguïté** où le modèle risque de se tromper, et qui justifient d'aller au-delà du simple bag-of-words.
+
+---
+
+\newpage
+
+# Conclusion — Vers le choix du modèle de Machine Learning
+
+L'ensemble de cette analyse exploratoire nous permet de dresser un **portrait précis des données** et d'en tirer des recommandations directes pour la stratégie de modélisation.
+
+---
+
+## Ce que les données nous disent
+
+**1. Un signal textuel fort et exploitable.**
+Les visualisations de vocabulaire (plots 3, 4, 5, nuages de mots) montrent que les messages haineux et neutres sont **lexicalement très distincts**, et que chaque catégorie possède ses propres marqueurs lexicaux dominants. Cette séparabilité est une excellente nouvelle : elle signifie que des **approches classiques de NLP** (bag-of-words, TF-IDF) suffiront à construire un modèle performant, sans nécessiter des architectures deep learning complexes dès le départ.
+
+**2. Des données parfaitement équilibrées.**
+Avec 1 320 messages par classe et 220 par catégorie, aucun rééquilibrage n'est nécessaire. L'**accuracy** peut être utilisée comme métrique principale, complétée par le **F1-score macro** pour s'assurer que toutes les catégories sont bien traitées équitablement.
+
+**3. Des features complémentaires disponibles.**
+Au-delà du vocabulaire, nos analyses stylistiques (longueur, ponctuation, majuscules) et émotionnelles (scores NRC) révèlent des signaux supplémentaires discriminants. Ces features numériques enrichissent le vecteur de représentation et améliorent la robustesse du modèle sur les cas difficiles.
+
+**4. Des zones d'ambiguïté identifiées.**
+Les catégories Racisme et Xénophobie partagent du vocabulaire (pays, immigration), tout comme l'Islamophobie et la Xénophobie. Ces chevauchements lexicaux génèreront des erreurs de classification croisées dans les modèles simples, et orienteront les améliorations vers des modèles capables de comprendre le contexte.
+
+---
+
+## Stratégie de modélisation recommandée
+
+**Tâche 1 — Classification binaire (Haineux vs Non Haineux)**
+
+La forte séparabilité lexicale des deux classes favorise les **modèles linéaires dans l'espace TF-IDF** :
+- **Régression Logistique** : rapide, interprétable, excellente baseline. Les coefficients révèlent directement quels mots pèsent le plus dans la décision.
+- **SVM linéaire (LinearSVC)** : très performant sur les textes en haute dimension TF-IDF, souvent meilleur que la régression logistique sur les petits datasets.
+- **Naive Bayes Multinomial** : excellent sur les fréquences de mots, très rapide, bonne baseline pour les tâches de classification de texte.
+
+**Tâche 2 — Classification multi-classes (6 catégories de harcèlement)**
+
+La présence de chevauchements lexicaux entre catégories et les profils émotionnels distincts orientent vers :
+- **Random Forest / Gradient Boosting (XGBoost)** : capables d'exploiter les **features mixtes** (TF-IDF + longueur + scores NRC + score stylistique) en capturant des interactions non linéaires entre features.
+- **SVM multi-classes (One-vs-Rest)** : très performant avec TF-IDF, gère naturellement les 6 classes.
+- **Réseau de neurones (MLP)** : si les features mixtes sont bien construites, un perceptron multicouche peut capturer des patterns plus complexes que les modèles linéaires.
+
+**Modèle avancé si nécessaire**
+
+Si les performances des modèles classiques sont insuffisantes sur les catégories à haine camouflée (faible score d'agressivité, ratio positif/négatif moins marqué), l'utilisation d'un **modèle de langage pré-entraîné de type BERT** (ou sa version multilingue mBERT) permettrait de capturer le contexte sémantique de la phrase entière, et non plus seulement la présence de mots isolés.
+
+---
+
+## Ce que nous pourrons prédire
+
+Grâce à cette architecture de modélisation, notre système sera capable de :
+
+1. **Détecter automatiquement** si un message est haineux ou non, avec une accuracy prévisionnellement élevée grâce à la forte séparabilité lexicale constatée.
+2. **Identifier la catégorie de harcèlement** parmi les 6 formes étudiées, avec des performances variables selon la catégorie (meilleures sur Racisme, Sexisme et Validisme qui ont les vocabulaires les plus exclusifs ; plus difficiles sur Xénophobie et Islamophobie qui partagent du vocabulaire).
+3. **Quantifier l'agressivité stylistique** d'un message via le score composite, ouvrant la voie à une **modération graduée** (signal faible, signal modéré, signal fort) plutôt qu'une simple décision binaire.
+4. **Expliquer les décisions du modèle** grâce aux features interprétables (poids TF-IDF, scores NRC), ce qui est essentiel dans un contexte de modération où la transparence des décisions automatiques est une exigence éthique.
