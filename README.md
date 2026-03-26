@@ -1,22 +1,20 @@
-# 🔍 Détection et Classification du Harcèlement en Ligne
+Détection et Classification du Harcèlement en Ligne
 
-> ⚠️ **Projet en cours** — L3 MIASHS, Semestre 6, Sciences des Données 4 (2025–2026)
+Projet en cours — L3 MIASHS, Semestre 6, Sciences des Données 4 (2025–2026)
 
-Projet de groupe réalisé par **Chloé Ribault, Sarah, Hafsa et Nadir** dans le cadre du module Sciences des Données 4 en L3 MIASHS.
+Projet de groupe réalisé en groupe de 4 dans le cadre du module Sciences des Données 4 en L3 MIASHS.
 
-## Objectif
+Objectif : Construire un pipeline complet de détection automatique du harcèlement en ligne à partir de messages textuels, en deux tâches :
 
-Construire un pipeline complet de **détection automatique du harcèlement en ligne** à partir de messages textuels, en deux tâches :
+1. Classification binaire : détecter si un message est haineux ou non
+2. *Classification multi-classes : identifier la catégorie parmi 6 formes de harcèlement (Homophobie, Islamophobie, Racisme, Sexisme, Validisme, Xénophobie)
 
-1. **Classification binaire** : détecter si un message est haineux ou non
-2. **Classification multi-classes** : identifier la catégorie parmi 6 formes de harcèlement (Homophobie, Islamophobie, Racisme, Sexisme, Validisme, Xénophobie)
-
-## Données
+Données
 
 - `Harcelement.csv` — base de 2 640 messages annotés (colonnes : Identifiant, Texte, Traduction, Types, Categories)
 - Parfaitement équilibrée : 1 320 messages haineux / 1 320 neutres, 220 messages par catégorie
 
-## Contenu du repo
+Contenu du repo
 
 | Fichier | Description |
 |---|---|
@@ -28,12 +26,12 @@ Construire un pipeline complet de **détection automatique du harcèlement en li
 | `Explication_TF.docx` | Explication détaillée des résultats TF-IDF (précision 98% binaire, 89% multi-classes) |
 | `Harcelement.csv` | Base de données annotée |
 
-## Stack technique
+Stack technique
 
-- **R** : tidyverse, tidytext, wordcloud, syuzhet (NRC), ggplot2
-- **Python** : scikit-learn (TF-IDF, LogisticRegression, StratifiedKFold), pandas, numpy
+- R : tidyverse, tidytext, wordcloud, syuzhet (NRC), ggplot2
+- Python : scikit-learn (TF-IDF, LogisticRegression, StratifiedKFold), pandas, numpy
 
-## État d'avancement
+État d'avancement
 
 - [x] Constitution et nettoyage de la base de données
 - [x] Analyse exploratoire complète (EDA) en R
@@ -45,7 +43,7 @@ Construire un pipeline complet de **détection automatique du harcèlement en li
 - [ ] Features enrichies (NRC + longueur + score stylistique)
 - [ ] Rapport final et conclusions
 
-## Reproduire l'analyse R
+Reproduire l'analyse R
 
 ```r
 # Installer les dépendances
@@ -55,7 +53,7 @@ install.packages(c("tidyverse", "tidytext", "tm", "wordcloud", "syuzhet", "RColo
 # Puis knit le fichier depuis RStudio
 ```
 
-## Lancer le modèle Python
+Lancer le modèle Python
 
 ```bash
 pip install scikit-learn pandas numpy
@@ -64,6 +62,3 @@ python harcelement_ml2_cv.py
 
 > Le script attend les fichiers `Base_Entraînement - Feuille 1.csv` et `Base_Test - Feuille 1.csv` dans le même dossier.
 
-## Auteurs
-
-Chloé Ribault, Sarah, Hafsa, Nadir — L3 MIASHS, 2025–2026
